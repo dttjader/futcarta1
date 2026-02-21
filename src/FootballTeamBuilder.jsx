@@ -356,6 +356,7 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
   const [showAdd, setShowAdd] = useState(false);
   const [newP, setNewP] = useState({ name: '', position: 'GOL', team: '', number: '' });
   const [confirmDel, setConfirmDel] = useState(null);
+  const [addError, setAddError] = useState('');
 
   // Status computation (only used in read-only mode)
   const getStatus = (player) => {
@@ -404,7 +405,11 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
   const saveEdit = (id) => { setPlayers(players.map(p => p.id === id ? { ...p, ...editForm, number: Number(editForm.number) } : p)); setEditingId(null); };
   const doDelete = (id) => { setPlayers(players.filter(p => p.id !== id)); setConfirmDel(null); };
   const doAdd = () => {
-    if (!newP.name.trim() || !newP.team.trim() || !newP.number) { alert('Preencha todos os campos!'); return; }
+    if (!newP.name.trim() || !newP.team.trim() || !newP.number) {
+      setAddError('Preencha nome, time e número antes de confirmar.');
+      return;
+    }
+    setAddError('');
     setPlayers([...players, { ...newP, id: nextId++, number: Number(newP.number) }]);
     setNewP({ name: '', position: 'GOL', team: '', number: '' });
     setShowAdd(false);
@@ -548,9 +553,10 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
                   <input className="ftb-glass-input" placeholder="Time / Edição *" value={newP.team} onChange={e => setNewP({ ...newP, team: e.target.value })} />
                   <input className="ftb-glass-input" type="number" placeholder="Nº *" min="1" max="99" value={newP.number} onChange={e => setNewP({ ...newP, number: e.target.value })} />
                 </div>
+                {addError && <div style={{ fontSize:'0.78rem', color:'#fca5a5', marginBottom:'8px' }}>⚠️ {addError}</div>}
                 <div style={{ display: 'flex', gap: 8 }}>
                   <button onClick={doAdd} style={{ background: 'rgba(34,197,94,0.22)', border: '1px solid rgba(34,197,94,0.40)', color: '#86efac', borderRadius: 7, padding: '8px 20px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem' }}>✓ Confirmar</button>
-                  <button onClick={() => setShowAdd(false)} style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.14)', color: 'rgba(255,255,255,0.65)', borderRadius: 7, padding: '8px 20px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem' }}>Cancelar</button>
+                  <button onClick={() => { setShowAdd(false); setAddError(''); }} style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.14)', color: 'rgba(255,255,255,0.65)', borderRadius: 7, padding: '8px 20px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem' }}>Cancelar</button>
                 </div>
               </div>
             )}
@@ -662,6 +668,31 @@ export default function FootballTeamBuilder() {
   const [completedTeams, setCompletedTeams] = useState([]);
   const [showCompletedTeams, setShowCompletedTeams] = useState(false);
 
+  // ── Native dialog replacements ──────────────────────────────────────────────
+  const [dialog, setDialog] = useState(null);
+  const [promptValue, setPromptValue] = useState('');
+
+  const showAlert = (message) => new Promise(resolve => {
+    setDialog({ type: 'alert', message, onConfirm: () => { setDialog(null); resolve(); } });
+  });
+
+  const showConfirm = (message) => new Promise(resolve => {
+    setDialog({
+      type: 'confirm', message,
+      onConfirm: () => { setDialog(null); resolve(true); },
+      onCancel:  () => { setDialog(null); resolve(false); },
+    });
+  });
+
+  const showPrompt = (message, defaultValue = '') => new Promise(resolve => {
+    setPromptValue(defaultValue);
+    setDialog({
+      type: 'prompt', message,
+      onConfirm: (val) => { setDialog(null); resolve(val); },
+      onCancel:  () => { setDialog(null); resolve(null); },
+    });
+  });
+
   const countPositions = (team) =>
     team.reduce((acc, p) => { acc[p.position] = (acc[p.position] || 0) + 1; return acc; }, {});
 
@@ -696,7 +727,7 @@ export default function FootballTeamBuilder() {
   const isTeamComplete = mainTeam.length === 11 && reserves.length === maxReservesTotal;
 
   const rollDice = () => {
-    if (drawnPlayers.length > 0) { alert("Você precisa escolher o destino de todos os jogadores sorteados antes de rolar novamente!"); return; }
+    if (drawnPlayers.length > 0) { showAlert("Você precisa escolher o destino de todos os jogadores sorteados antes de rolar novamente!"); return; }
     if (!gameStarted) setGameStarted(true);
     setIsRolling(true);
     let count = 0;
@@ -719,7 +750,7 @@ export default function FootballTeamBuilder() {
     if (available.length === 0) {
       setDiscardedThisRound([]);
       let fresh = players.filter(p => !savedIds.has(p.id) && !mainTeam.find(s=>s.id===p.id) && !reserves.find(s=>s.id===p.id) && !selectedPlayers.find(s=>s.id===p.id) && !shouldHidePlayer(p));
-      alert("A pilha acabou! Embaralhando novamente.");
+      // pilha resetada
       setDrawnPlayers([...fresh].sort(() => Math.random() - 0.5).slice(0, Math.min(num, fresh.length)));
     } else {
       setDrawnPlayers([...available].sort(() => Math.random() - 0.5).slice(0, Math.min(num, available.length)));
@@ -729,11 +760,11 @@ export default function FootballTeamBuilder() {
   const selectPlayer  = (p) => { setSelectedPlayers([...selectedPlayers, p]); setDrawnPlayers(drawnPlayers.filter(x => x.id !== p.id)); };
   const discardPlayer = (p) => { setDiscardedThisRound([...discardedThisRound, p]); setDrawnPlayers(drawnPlayers.filter(x => x.id !== p.id)); };
   const moveToMainTeam = (p) => {
-    if (!canAddToMain(p)) { alert(`A formação ${formation} já tem o máximo de ${POSITION_LABELS[p.position]}(s)!`); return; }
+    if (!canAddToMain(p)) { showAlert(`A formação ${formation} já tem o máximo de ${POSITION_LABELS[p.position]}(s)!`); return; }
     setMainTeam([...mainTeam, p]); setSelectedPlayers(selectedPlayers.filter(x => x.id !== p.id));
   };
   const moveToReserves = (p) => {
-    if (!canAddToReserves(p)) { alert(`Banco de reservas para ${POSITION_LABELS[p.position]} já está cheio!`); return; }
+    if (!canAddToReserves(p)) { showAlert(`Banco de reservas para ${POSITION_LABELS[p.position]} já está cheio!`); return; }
     setReserves([...reserves, p]); setSelectedPlayers(selectedPlayers.filter(x => x.id !== p.id));
   };
   const removeFromSelected = (p) => { setSelectedPlayers(selectedPlayers.filter(x => x.id !== p.id)); setDiscardedThisRound([...discardedThisRound, p]); };
@@ -745,20 +776,20 @@ export default function FootballTeamBuilder() {
     setSelectedPlayers([]); setDiscardedThisRound([]); setMainTeam([]); setReserves([]);
   };
 
-  const resetAll = () => {
-    if (confirm("Tem certeza? Todos os times criados serão perdidos.")) {
-      reset(); setCompletedTeams([]); setGameStarted(false);
-    }
+  const resetAll = async () => {
+    const ok = await showConfirm("Tem certeza? Todos os times criados serão perdidos.");
+    if (ok) { reset(); setCompletedTeams([]); setGameStarted(false); }
   };
 
-  const saveCurrentTeam = () => {
-    if (mainTeam.length === 0) { alert("Não há time para salvar!"); return; }
-    const teamName = prompt("Nome do time:");
-    const finalName = teamName?.trim() || `Time ${completedTeams.length + 1}`;
+  const saveCurrentTeam = async () => {
+    if (mainTeam.length === 0) { await showAlert("Não há time para salvar!"); return; }
+    const teamName = await showPrompt("Nome do time:", `Time ${completedTeams.length + 1}`);
+    if (teamName === null) return; // cancelled
+    const finalName = teamName.trim() || `Time ${completedTeams.length + 1}`;
     setCompletedTeams([...completedTeams, { id: Date.now(), name: finalName, formation, mainTeam: [...mainTeam], reserves: [...reserves], createdAt: new Date().toLocaleString('pt-BR') }]);
     setMainTeam([]); setReserves([]); setSelectedPlayers([]); setDiscardedThisRound([]);
     setFormation("4-4-2"); setDiceResult(null); setDrawnPlayers([]);
-    alert(`Time "${finalName}" salvo!`);
+    await showAlert(`Time "${finalName}" salvo!`);
   };
 
   const getPositionStatus = () => {
@@ -778,6 +809,40 @@ export default function FootballTeamBuilder() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-800 via-green-700 to-green-900 p-8">
+
+      {/* ── Dialog overlay (replaces alert/confirm/prompt) ── */}
+      {dialog && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', backdropFilter:'blur(4px)', zIndex:400, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }}>
+          <div style={{ background:'linear-gradient(155deg, rgba(20,83,45,0.98) 0%, rgba(10,24,16,0.99) 100%)', border:'1px solid rgba(255,255,255,0.20)', borderRadius:'14px', padding:'28px', maxWidth:'380px', width:'100%', textAlign:'center', boxShadow:'0 24px 70px rgba(0,0,0,0.70)' }}>
+            <div style={{ fontSize:'0.95rem', color:'#e8eaf0', lineHeight:1.5, marginBottom:'22px', whiteSpace:'pre-line' }}>{dialog.message}</div>
+            {dialog.type === 'prompt' && (
+              <input
+                autoFocus
+                style={{ background:'rgba(255,255,255,0.10)', border:'1px solid rgba(255,255,255,0.25)', borderRadius:'7px', padding:'9px 13px', color:'#fff', fontSize:'0.9rem', width:'100%', outline:'none', marginBottom:'18px', fontFamily:'inherit' }}
+                value={promptValue}
+                onChange={e => setPromptValue(e.target.value)}
+                onKeyDown={e => { if(e.key === 'Enter') dialog.onConfirm(promptValue); if(e.key === 'Escape' && dialog.onCancel) dialog.onCancel(); }}
+              />
+            )}
+            <div style={{ display:'flex', gap:'10px', justifyContent:'center' }}>
+              <button
+                onClick={() => dialog.type === 'prompt' ? dialog.onConfirm(promptValue) : dialog.onConfirm()}
+                style={{ background:'rgba(34,197,94,0.25)', border:'1px solid rgba(34,197,94,0.45)', color:'#86efac', borderRadius:'8px', padding:'9px 26px', cursor:'pointer', fontWeight:700, fontSize:'0.88rem', transition:'all 0.15s' }}
+              >
+                {dialog.type === 'confirm' ? 'Confirmar' : 'OK'}
+              </button>
+              {(dialog.type === 'confirm' || dialog.type === 'prompt') && dialog.onCancel && (
+                <button
+                  onClick={dialog.onCancel}
+                  style={{ background:'rgba(255,255,255,0.10)', border:'1px solid rgba(255,255,255,0.18)', color:'rgba(255,255,255,0.75)', borderRadius:'8px', padding:'9px 22px', cursor:'pointer', fontWeight:700, fontSize:'0.88rem', transition:'all 0.15s' }}
+                >
+                  Cancelar
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Single unified modal */}
       {showModal && (
@@ -823,7 +888,7 @@ export default function FootballTeamBuilder() {
           <div className="flex flex-wrap justify-center gap-3 mb-4">
             {Object.keys(FORMATIONS).map(form => (
               <button key={form}
-                onClick={() => mainTeam.length === 0 ? setFormation(form) : alert("Não pode mudar a formação com jogadores já escalados!")}
+                onClick={() => mainTeam.length === 0 ? setFormation(form) : showAlert("Não pode mudar a formação com jogadores já escalados!")}
                 className={`px-6 py-3 rounded-lg font-bold text-lg transition-all ${formation === form ? 'bg-yellow-400 text-green-900 scale-110' : 'bg-white/20 text-white hover:bg-white/30'}`}>
                 {form}
               </button>
@@ -1056,7 +1121,7 @@ export default function FootballTeamBuilder() {
                       <h3 className="text-2xl font-bold text-yellow-300">{team.name}</h3>
                       <p className="text-white/70 text-sm">Formação: {team.formation} | Criado em: {team.createdAt}</p>
                     </div>
-                    <button onClick={() => { if(confirm(`Remover "${team.name}"?`)) setCompletedTeams(completedTeams.filter(t => t.id !== team.id)); }}
+                    <button onClick={async () => { const ok = await showConfirm(`Remover "${team.name}"?`); if(ok) setCompletedTeams(completedTeams.filter(t => t.id !== team.id)); }}
                       className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">
                       🗑️ Remover
                     </button>
