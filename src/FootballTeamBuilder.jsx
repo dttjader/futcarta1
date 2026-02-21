@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Shuffle, Trash2, Users, ArrowDown, ArrowUp, AlertCircle, Edit3, Plus, X, Search, Eye, Lock, CheckCircle } from 'lucide-react';
+import { Shuffle, Trash2, Users, ArrowDown, ArrowUp, Edit3, Plus, X, Search, Eye, Lock, CheckCircle } from 'lucide-react';
 
 // ─── DATA ────────────────────────────────────────────────────────────────────
 
