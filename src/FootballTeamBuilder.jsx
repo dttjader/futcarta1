@@ -159,9 +159,7 @@ const COLOR_THEMES = {
   },
 };
 
-// These are set dynamically via useTheme() hook — defaults kept for SSR safety
-const POSITION_COLORS = COLOR_THEMES.vibrante.tailwind;
-const POSITION_HEX    = COLOR_THEMES.vibrante.hex;
+
 
 const POSITIONS = ["GOL", "LAT", "ZAG", "VOL", "MEI", "ATA"];
 
