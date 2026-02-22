@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Shuffle, Trash2, Users, ArrowDown, ArrowUp, Edit3, Plus, X, Search, Eye, Lock, CheckCircle } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Shuffle, Trash2, Users, ArrowDown, ArrowUp, Edit3, Plus, X, Search, Eye, Lock, CheckCircle, Download, Upload } from 'lucide-react';
 
 // ─── DATA ────────────────────────────────────────────────────────────────────
 
@@ -137,22 +137,33 @@ const POSITION_LABELS = {
   VOL: "Volante", MEI: "Meia", ATA: "Atacante"
 };
 
-const POSITION_COLORS = {
-  GOL: "from-yellow-500 to-yellow-600",
-  LAT: "from-blue-500 to-blue-600",
-  ZAG: "from-green-500 to-green-600",
-  VOL: "from-purple-500 to-purple-600",
-  MEI: "from-orange-500 to-orange-600",
-  ATA: "from-red-500 to-red-600"
+// Three intensity levels for position colours and background
+const COLOR_THEMES = {
+  vibrante: {
+    label: "Vibrante",
+    bg: "from-green-800 via-green-700 to-green-900",
+    hex: { GOL: "#d97706", LAT: "#2563eb", ZAG: "#16a34a", VOL: "#7c3aed", MEI: "#ea580c", ATA: "#dc2626" },
+    tailwind: { GOL: "from-yellow-500 to-yellow-600", LAT: "from-blue-500 to-blue-600", ZAG: "from-green-500 to-green-600", VOL: "from-purple-500 to-purple-600", MEI: "from-orange-500 to-orange-600", ATA: "from-red-500 to-red-600" },
+  },
+  medio: {
+    label: "Médio",
+    bg: "from-green-900 via-teal-900 to-slate-900",
+    hex: { GOL: "#b45309", LAT: "#1d4ed8", ZAG: "#15803d", VOL: "#6d28d9", MEI: "#c2410c", ATA: "#b91c1c" },
+    tailwind: { GOL: "from-yellow-700 to-yellow-800", LAT: "from-blue-700 to-blue-800", ZAG: "from-green-700 to-green-800", VOL: "from-purple-700 to-purple-800", MEI: "from-orange-700 to-orange-800", ATA: "from-red-700 to-red-800" },
+  },
+  suave: {
+    label: "Suave",
+    bg: "from-slate-800 via-slate-700 to-slate-900",
+    hex: { GOL: "#78450a", LAT: "#1e3a5f", ZAG: "#14532d", VOL: "#3b1f6b", MEI: "#7c2d12", ATA: "#7f1d1d" },
+    tailwind: { GOL: "from-yellow-900 to-amber-950", LAT: "from-blue-900 to-blue-950", ZAG: "from-green-900 to-emerald-950", VOL: "from-purple-900 to-violet-950", MEI: "from-orange-900 to-orange-950", ATA: "from-red-900 to-red-950" },
+  },
 };
 
-const POSITION_HEX = {
-  GOL: "#d97706", LAT: "#2563eb", ZAG: "#16a34a",
-  VOL: "#7c3aed", MEI: "#ea580c", ATA: "#dc2626"
-};
+// These are set dynamically via useTheme() hook — defaults kept for SSR safety
+const POSITION_COLORS = COLOR_THEMES.vibrante.tailwind;
+const POSITION_HEX    = COLOR_THEMES.vibrante.hex;
 
 const POSITIONS = ["GOL", "LAT", "ZAG", "VOL", "MEI", "ATA"];
-let nextId = 200;
 
 // ─── MODAL CSS — green glass, matching main screen ───────────────────────────
 
@@ -344,9 +355,45 @@ const MODAL_CSS = `
   }
 `;
 
+// ─── CSV PARSER (shared by file import and paste import) ─────────────────────
+let nextId = 200; // IDs above existing players
+
+function parseCsvText(text, setImportModal, setDialog) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length === 0) { setDialog({ type:'alert', message:'Texto vazio.', onConfirm:()=>setDialog(null) }); return; }
+  const firstLower = lines[0].toLowerCase();
+  const hasHeader = firstLower.includes('nome') || firstLower.includes('posicao') || firstLower.includes('time');
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  const parsedPlayers = [];
+  const errors = [];
+  dataLines.forEach((line, idx) => {
+    const sep = line.includes(';') ? ';' : ',';
+    const cols = line.split(sep).map(c => c.trim().replace(/^"|"$/g, ''));
+    if (cols.length < 4) { errors.push(`Linha ${idx+2}: colunas insuficientes`); return; }
+    const [team, name, position, number] = cols;
+    const pos = position.toUpperCase();
+    if (!['GOL','LAT','ZAG','VOL','MEI','ATA'].includes(pos)) {
+      errors.push(`Linha ${idx+2}: posição inválida "${position}"`); return;
+    }
+    const num = parseInt(number);
+    if (!name.trim() || !team.trim() || isNaN(num)) {
+      errors.push(`Linha ${idx+2}: dados incompletos`); return;
+    }
+    parsedPlayers.push({ id: nextId++, name: name.trim(), position: pos, team: team.trim(), number: num });
+  });
+  if (parsedPlayers.length === 0) {
+    setDialog({ type:'alert', message:`Nenhum jogador válido encontrado.${errors.length ? '\n\nErros:\n'+errors.slice(0,5).join('\n') : ''}`, onConfirm:()=>setDialog(null) });
+    return;
+  }
+  const teamMap = {};
+  parsedPlayers.forEach(p => { if (!teamMap[p.team]) teamMap[p.team]=[]; teamMap[p.team].push(p); });
+  const importableTeams = Object.entries(teamMap).map(([name, plist]) => ({ name, players: plist }));
+  setImportModal({ teams: importableTeams, selected: new Set(importableTeams.map(t => t.name)), errors });
+}
+
 // ─── PLAYER ROSTER MODAL (edit mode OR read-only mode) ────────────────────────
 
-function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserves, selectedPlayers, drawnPlayers, completedTeams, onClose }) {
+function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserves, selectedPlayers, drawnPlayers, completedTeams, onClose, onExportCsv, onImportFile, onParsePaste, disabledTeams, toggleTeam, activeTeamCount, allTeamNames, posHex }) {
   const [search, setSearch] = useState('');
   const [filterPos, setFilterPos] = useState('ALL');
   const [filterTeam, setFilterTeam] = useState('ALL');
@@ -357,6 +404,9 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
   const [newP, setNewP] = useState({ name: '', position: 'GOL', team: '', number: '' });
   const [confirmDel, setConfirmDel] = useState(null);
   const [addError, setAddError] = useState('');
+  const importInputRef = useRef(null);
+  const [pasteMode, setPasteMode] = useState(false);
+  const [pasteText, setPasteText] = useState('');
 
   // Status computation (only used in read-only mode)
   const getStatus = (player) => {
@@ -465,7 +515,7 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
               </div>
               {POSITIONS.map(pos => (
                 <div className="ftb-schip" key={pos}>
-                  <span className="ftb-pbadge" style={{ background: POSITION_HEX[pos], marginBottom: 4, fontSize: '0.60rem' }}>{pos}</span>
+                  <span className="ftb-pbadge" style={{ background: posHex[pos], marginBottom: 4, fontSize: '0.60rem' }}>{pos}</span>
                   <span style={{ fontSize: '1.1rem', fontWeight: 700, color: '#fff', lineHeight: 1 }}>{posCounts[pos]}</span>
                 </div>
               ))}
@@ -565,7 +615,7 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
             {POSITIONS.filter(pos => grouped[pos]).map(pos => (
               <div key={pos} style={{ marginBottom: 18 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <span className="ftb-pbadge" style={{ background: POSITION_HEX[pos] }}>{pos}</span>
+                  <span className="ftb-pbadge" style={{ background: posHex[pos] }}>{pos}</span>
                   <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: 1, textTransform: 'uppercase' }}>{POSITION_LABELS[pos]}</span>
                   <span style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.30)' }}>— {grouped[pos].length}</span>
                 </div>
@@ -593,7 +643,7 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
                       <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.38)', fontSize: '0.85rem', textAlign: 'right' }}>
                         #{player.number}
                       </span>
-                      <span className="ftb-pbadge" style={{ background: POSITION_HEX[player.position] }}>
+                      <span className="ftb-pbadge" style={{ background: posHex[player.position] }}>
                         {player.position}
                       </span>
                       <div>
@@ -641,9 +691,134 @@ function PlayerRosterModal({ players, setPlayers, gameStarted, mainTeam, reserve
                 </p>
               </div>
             )}
+
+            {/* ── Active Teams panel ── */}
+            <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+              <div style={{ fontSize: '0.70rem', fontWeight: 700, color: 'rgba(255,255,255,0.45)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 10, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <span>Times no Baralho</span>
+                <span style={{ color: activeTeamCount <= 3 ? '#fca5a5' : '#86efac', fontWeight:700 }}>{activeTeamCount}/{allTeamNames.length} ativos</span>
+              </div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:7, marginBottom:14 }}>
+                {allTeamNames.map(teamName => {
+                  const isActive = !disabledTeams.has(teamName);
+                  const isLast3 = isActive && activeTeamCount <= 3;
+                  return (
+                    <button
+                      key={teamName}
+                      onClick={() => !gameStarted && toggleTeam(teamName)}
+                      disabled={gameStarted}
+                      title={gameStarted ? 'Não é possível alterar times com o jogo em andamento' : isLast3 && isActive ? 'Mínimo de 3 times necessário' : isActive ? 'Clique para desativar' : 'Clique para ativar'}
+                      style={{
+                        fontSize:'0.72rem', fontWeight:700, padding:'5px 11px', borderRadius:99,
+                        border: `1px solid ${isActive ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.10)'}`,
+                        background: isActive ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.03)',
+                        color: isActive ? '#fff' : 'rgba(255,255,255,0.30)',
+                        cursor: gameStarted ? 'default' : isLast3 && isActive ? 'not-allowed' : 'pointer',
+                        transition:'all 0.15s',
+                        textDecoration: isActive ? 'none' : 'line-through',
+                      }}
+                    >
+                      {isActive ? '✓' : '✗'} {teamName}
+                    </button>
+                  );
+                })}
+              </div>
+              {!gameStarted && (
+                <p style={{ fontSize:'0.68rem', color:'rgba(255,255,255,0.30)', marginBottom:14 }}>
+                  Mínimo de 3 times ativos. Times desativados não entram no sorteio.{gameStarted ? ' (bloqueado durante o jogo)' : ''}
+                </p>
+              )}
+            </div>
+
+            {/* ── Export / Import toolbar (always visible inside modal) ── */}
+            <div style={{ paddingTop: 18, borderTop: '1px solid rgba(255,255,255,0.10)' }}>
+              <div style={{ fontSize: '0.70rem', fontWeight: 700, color: 'rgba(255,255,255,0.45)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 12, textAlign: 'center' }}>
+                Exportar / Importar Baralho
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                {/* Export CSV button */}
+                <button
+                  onClick={onExportCsv}
+                  style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(59,130,246,0.20)', border: '1px solid rgba(59,130,246,0.40)', color: '#93c5fd', borderRadius: 8, padding: '9px 18px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem', transition: 'all 0.15s' }}
+                >
+                  <Download size={14} /> Exportar Baralho (.csv)
+                </button>
+
+                {/* Import CSV — dual mode: file picker + paste text */}
+                {!gameStarted && (
+                  <>
+                    <input
+                      ref={importInputRef}
+                      type="file"
+                      accept=".csv,.txt"
+                      style={{ display: 'none' }}
+                      onChange={(e) => { onImportFile(e); if(importInputRef.current) importInputRef.current.value = ''; }}
+                    />
+                    <button
+                      onClick={() => importInputRef.current && importInputRef.current.click()}
+                      style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(234,179,8,0.20)', border: '1px solid rgba(234,179,8,0.40)', color: '#fde047', borderRadius: 8, padding: '9px 18px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem', transition: 'all 0.15s' }}
+                    >
+                      <Upload size={14} /> Importar Arquivo (.csv)
+                    </button>
+                    <button
+                      onClick={() => { setPasteMode(true); setPasteText(''); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'rgba(168,85,247,0.20)', border: '1px solid rgba(168,85,247,0.40)', color: '#d8b4fe', borderRadius: 8, padding: '9px 18px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem', transition: 'all 0.15s' }}
+                    >
+                      <Plus size={14} /> Colar CSV
+                    </button>
+                  </>
+                )}
+              </div>
+              <p style={{ fontSize: '0.70rem', color: 'rgba(255,255,255,0.35)', textAlign: 'center', marginTop: 10, lineHeight: 1.5 }}>
+                Exporte o baralho, edite no Excel ou Bloco de Notas, e importe para adicionar novos times de jogadores.
+              </p>
+            </div>
           </div>
         </div>
       </div>
+
+      {/* ── Paste CSV overlay ── */}
+      {pasteMode && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.70)', backdropFilter:'blur(5px)', zIndex:500, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
+          <div style={{ width:'100%', maxWidth:520, background:'linear-gradient(155deg, rgba(20,83,45,0.98) 0%, rgba(10,24,16,0.99) 100%)', border:'1px solid rgba(255,255,255,0.20)', borderRadius:16, overflow:'hidden', boxShadow:'0 28px 80px rgba(0,0,0,0.65)' }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'18px 22px 14px', borderBottom:'1px solid rgba(255,255,255,0.10)', background:'rgba(0,0,0,0.20)' }}>
+              <div style={{ fontWeight:800, fontSize:'1rem', color:'#fff', display:'flex', alignItems:'center', gap:8 }}>
+                <Upload size={16}/> Colar Conteúdo CSV
+              </div>
+              <button onClick={() => setPasteMode(false)} style={{ background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', borderRadius:7, padding:'5px 8px', cursor:'pointer', color:'rgba(255,255,255,0.60)', display:'flex' }}>
+                <X size={16}/>
+              </button>
+            </div>
+            <div style={{ padding:'18px 22px 22px' }}>
+              <p style={{ fontSize:'0.80rem', color:'rgba(255,255,255,0.55)', marginBottom:12, lineHeight:1.5 }}>
+                Copie o conteúdo do arquivo CSV e cole aqui. Formato esperado:<br/>
+                <code style={{ fontSize:'0.72rem', color:'#86efac', background:'rgba(0,0,0,0.30)', padding:'2px 6px', borderRadius:4 }}>
+                  time,nome,posicao,numero
+                </code>
+              </p>
+              <textarea
+                autoFocus
+                value={pasteText}
+                onChange={e => setPasteText(e.target.value)}
+                placeholder={'Brasil 1970,Pelé,MEI,10\nBrasil 1970,Tostão,ATA,9'}
+                style={{ width:'100%', height:180, background:'rgba(255,255,255,0.07)', border:'1px solid rgba(255,255,255,0.18)', borderRadius:8, padding:'10px 13px', color:'#e8eaf0', fontSize:'0.82rem', fontFamily:'monospace', resize:'vertical', outline:'none', boxSizing:'border-box' }}
+              />
+              <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:14 }}>
+                <button onClick={() => setPasteMode(false)}
+                  style={{ background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', color:'rgba(255,255,255,0.65)', borderRadius:8, padding:'9px 20px', cursor:'pointer', fontWeight:700, fontSize:'0.85rem' }}>
+                  Cancelar
+                </button>
+                <button
+                  disabled={!pasteText.trim()}
+                  onClick={() => { setPasteMode(false); onParsePaste(pasteText); }}
+                  style={{ background: pasteText.trim() ? 'rgba(168,85,247,0.28)' : 'rgba(255,255,255,0.06)', border:`1px solid ${pasteText.trim() ? 'rgba(168,85,247,0.50)' : 'rgba(255,255,255,0.10)'}`, color: pasteText.trim() ? '#d8b4fe' : 'rgba(255,255,255,0.30)', borderRadius:8, padding:'9px 22px', cursor: pasteText.trim() ? 'pointer' : 'not-allowed', fontWeight:700, fontSize:'0.85rem', transition:'all 0.15s' }}>
+                  ✓ Processar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -667,6 +842,12 @@ export default function FootballTeamBuilder() {
   const [hideCompletedPositions, setHideCompletedPositions] = useState(false);
   const [completedTeams, setCompletedTeams] = useState([]);
   const [showCompletedTeams, setShowCompletedTeams] = useState(false);
+  const [importModal, setImportModal] = useState(null); // { teams: [...], selected: Set }
+  const [disabledTeams, setDisabledTeams] = useState(new Set());
+  const [colorTheme, setColorTheme] = useState('vibrante'); // 'vibrante' | 'medio' | 'suave'
+  const theme = COLOR_THEMES[colorTheme];
+  const posHex = theme.hex;       // position badge colours
+  const posTw  = theme.tailwind;  // tailwind gradient classes // teams excluded from deck
 
   // ── Native dialog replacements ──────────────────────────────────────────────
   const [dialog, setDialog] = useState(null);
@@ -720,7 +901,25 @@ export default function FootballTeamBuilder() {
   const shouldHidePlayer = (player) => {
     if (hideUnavailablePositions && !isPositionAvailable(player.position)) return true;
     if (hideCompletedPositions && isPositionComplete(player.position)) return true;
+    if (disabledTeams.has(player.team)) return true;
     return false;
+  };
+
+  // All distinct team names in the deck
+  const allTeamNames = [...new Set(players.map(p => p.team))];
+  const activeTeamCount = allTeamNames.filter(t => !disabledTeams.has(t)).length;
+
+  const toggleTeam = (teamName) => {
+    if (!disabledTeams.has(teamName) && activeTeamCount <= 3) {
+      // would drop below 3 — block
+      showAlert('É necessário ter pelo menos 3 times ativos no baralho.');
+      return;
+    }
+    setDisabledTeams(prev => {
+      const next = new Set(prev);
+      next.has(teamName) ? next.delete(teamName) : next.add(teamName);
+      return next;
+    });
   };
 
   const maxReservesTotal = Object.values(getMaxReservesForFormation(formation)).reduce((a, b) => a + b, 0);
@@ -778,7 +977,7 @@ export default function FootballTeamBuilder() {
 
   const resetAll = async () => {
     const ok = await showConfirm("Tem certeza? Todos os times criados serão perdidos.");
-    if (ok) { reset(); setCompletedTeams([]); setGameStarted(false); }
+    if (ok) { reset(); setCompletedTeams([]); setGameStarted(false); setDisabledTeams(new Set()); }
   };
 
   const saveCurrentTeam = async () => {
@@ -790,6 +989,89 @@ export default function FootballTeamBuilder() {
     setMainTeam([]); setReserves([]); setSelectedPlayers([]); setDiscardedThisRound([]);
     setFormation("4-4-2"); setDiceResult(null); setDrawnPlayers([]);
     await showAlert(`Time "${finalName}" salvo!`);
+  };
+
+
+  // ── Export all completed teams to .txt ──────────────────────────────────────
+  const exportTeamsTxt = () => {
+    if (completedTeams.length === 0) return;
+    const now = new Date();
+    const lines = [];
+    lines.push('========================================');
+    lines.push('MONTADOR DE TIME DE FUTEBOL');
+    lines.push(`Exportado em: ${now.toLocaleString('pt-BR')}`);
+    lines.push(`Total de times: ${completedTeams.length}`);
+    lines.push('========================================');
+    completedTeams.forEach((team, i) => {
+      lines.push('');
+      lines.push(`[${i + 1}] ${team.name}`);
+      lines.push(`Formação: ${team.formation} | Criado em: ${team.createdAt}`);
+      lines.push('----------------------------------------');
+      lines.push('TITULARES:');
+      ['GOL','LAT','ZAG','VOL','MEI','ATA'].forEach(pos => {
+        const pp = team.mainTeam.filter(p => p.position === pos);
+        if (pp.length) {
+          lines.push(`  ${POSITION_LABELS[pos]}:`);
+          pp.forEach(p => lines.push(`    • ${p.name} (#${p.number}) — ${p.team}`));
+        }
+      });
+      if (team.reserves.length) {
+        lines.push('RESERVAS:');
+        team.reserves.forEach(p => lines.push(`    • ${p.name} (#${p.number}) — ${POSITION_LABELS[p.position]} — ${p.team}`));
+      }
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `times_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}.txt`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+
+  // ── Export player roster as CSV (for editing and re-import) ─────────────────
+  const exportRosterCsv = () => {
+    const header = 'time,nome,posicao,numero';
+    const rows = players.map(p =>
+      `"${p.team}","${p.name}",${p.position},${p.number}`
+    );
+    const csv = [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'baralho_jogadores.csv';
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+
+  // ── Parse CSV and open import selection modal ────────────────────────────────
+  const handleParsePaste = (text) => {
+    parseCsvText(text, setImportModal, setDialog);
+  };
+
+  const handleImportFile = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => parseCsvText(ev.target.result, setImportModal, setDialog);
+    reader.readAsText(file, 'UTF-8');
+  };
+
+  // ── Confirm import of selected teams (skips teams already in deck) ──────────
+  const confirmImport = () => {
+    if (!importModal) return;
+    const existingTeamNames = new Set(players.map(p => p.team));
+    const toImport = importModal.teams
+      .filter(t => importModal.selected.has(t.name) && !existingTeamNames.has(t.name))
+      .flatMap(t => t.players);
+    if (toImport.length === 0) {
+      setImportModal(null);
+      showAlert('Nenhum jogador importado. Os times selecionados já existem no baralho.');
+      return;
+    }
+    setPlayers(prev => [...prev, ...toImport]);
+    setImportModal(null);
   };
 
   const getPositionStatus = () => {
@@ -808,7 +1090,7 @@ export default function FootballTeamBuilder() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-green-800 via-green-700 to-green-900 p-8">
+    <div className={`min-h-screen bg-gradient-to-br ${theme.bg} p-8`}>
 
       {/* ── Dialog overlay (replaces alert/confirm/prompt) ── */}
       {dialog && (
@@ -844,6 +1126,91 @@ export default function FootballTeamBuilder() {
         </div>
       )}
 
+      {/* ── Import selection modal ── */}
+      {importModal && (
+        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.65)', backdropFilter:'blur(5px)', zIndex:300, display:'flex', alignItems:'flex-start', justifyContent:'center', overflowY:'auto', padding:'28px 16px 48px' }}>
+          <div style={{ width:'100%', maxWidth:'620px', background:'linear-gradient(155deg, rgba(20,83,45,0.97) 0%, rgba(10,30,18,0.98) 100%)', border:'1px solid rgba(255,255,255,0.20)', borderRadius:'18px', boxShadow:'0 28px 90px rgba(0,0,0,0.65)', overflow:'hidden' }}>
+            {/* header */}
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'20px 26px 16px', borderBottom:'1px solid rgba(255,255,255,0.12)', background:'rgba(0,0,0,0.18)' }}>
+              <div style={{ fontSize:'1.3rem', fontWeight:800, color:'#fff', display:'flex', alignItems:'center', gap:10 }}>
+                <Upload size={20} /> Importar Times do CSV
+              </div>
+              <button onClick={() => setImportModal(null)} style={{ background:'rgba(255,255,255,0.10)', border:'1px solid rgba(255,255,255,0.18)', borderRadius:'8px', padding:'7px 9px', cursor:'pointer', color:'rgba(255,255,255,0.65)', display:'flex', alignItems:'center', transition:'all 0.15s' }}>
+                <X size={18} />
+              </button>
+            </div>
+            {/* body */}
+            <div style={{ padding:'22px 26px' }}>
+              <p style={{ fontSize:'0.85rem', color:'rgba(255,255,255,0.65)', marginBottom:'18px' }}>
+                Selecione quais times deseja importar. Apenas times completos são permitidos.
+              </p>
+              {/* errors */}
+              {importModal.errors && importModal.errors.length > 0 && (
+                <div style={{ background:'rgba(239,68,68,0.12)', border:'1px solid rgba(239,68,68,0.30)', borderRadius:'8px', padding:'10px 14px', marginBottom:'16px' }}>
+                  <div style={{ fontSize:'0.75rem', fontWeight:700, color:'#fca5a5', marginBottom:6 }}>⚠️ Avisos de leitura:</div>
+                  {importModal.errors.slice(0,5).map((e,i) => <div key={i} style={{ fontSize:'0.72rem', color:'#fca5a5' }}>{e}</div>)}
+                </div>
+              )}
+              {/* select/deselect all */}
+              <div style={{ display:'flex', gap:8, marginBottom:14 }}>
+                <button onClick={() => setImportModal(m => ({ ...m, selected: new Set(m.teams.map(t => t.name)) }))}
+                  style={{ fontSize:'0.75rem', fontWeight:700, padding:'5px 13px', borderRadius:'99px', border:'1px solid rgba(255,255,255,0.25)', background:'rgba(255,255,255,0.10)', color:'#fff', cursor:'pointer' }}>
+                  Selecionar Todos
+                </button>
+                <button onClick={() => setImportModal(m => ({ ...m, selected: new Set() }))}
+                  style={{ fontSize:'0.75rem', fontWeight:700, padding:'5px 13px', borderRadius:'99px', border:'1px solid rgba(255,255,255,0.15)', background:'rgba(255,255,255,0.05)', color:'rgba(255,255,255,0.55)', cursor:'pointer' }}>
+                  Limpar Seleção
+                </button>
+              </div>
+              {/* team list */}
+              <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:22, maxHeight:'340px', overflowY:'auto' }}>
+                {importModal.teams.map(t => {
+                  const checked = importModal.selected.has(t.name);
+                  const posCounts = t.players.reduce((acc,p) => { acc[p.position]=(acc[p.position]||0)+1; return acc; }, {});
+                  const existingNames = new Set(players.map(p => p.team));
+                  const isDup = existingNames.has(t.name);
+                  return (
+                    <label key={t.name} style={{ display:'flex', alignItems:'flex-start', gap:12, padding:'12px 14px', borderRadius:'10px', border:`1px solid ${isDup ? 'rgba(239,68,68,0.35)' : checked ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.08)'}`, background: isDup ? 'rgba(239,68,68,0.07)' : checked ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.04)', cursor: isDup ? 'not-allowed' : 'pointer', opacity: isDup ? 0.65 : 1, transition:'all 0.15s' }}>
+                      <input type="checkbox" checked={checked && !isDup} disabled={isDup} style={{ marginTop:3, width:16, height:16, cursor: isDup ? 'not-allowed' : 'pointer', accentColor:'#4ade80', flexShrink:0 }}
+                        onChange={() => !isDup && setImportModal(m => {
+                          const s = new Set(m.selected);
+                          s.has(t.name) ? s.delete(t.name) : s.add(t.name);
+                          return { ...m, selected: s };
+                        })} />
+                      <div style={{ flex:1 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                          <span style={{ fontWeight:700, color: isDup ? '#fca5a5' : '#fff', fontSize:'0.9rem' }}>{t.name}</span>
+                          {isDup && <span style={{ fontSize:'0.65rem', fontWeight:700, background:'rgba(239,68,68,0.25)', border:'1px solid rgba(239,68,68,0.40)', color:'#fca5a5', padding:'2px 8px', borderRadius:99 }}>já existe</span>}
+                        </div>
+                        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                          {['GOL','LAT','ZAG','VOL','MEI','ATA'].map(pos => posCounts[pos] ? (
+                            <span key={pos} style={{ fontSize:'0.65rem', fontWeight:700, background: posHex[pos], color:'#fff', padding:'2px 7px', borderRadius:4 }}>
+                              {pos} ×{posCounts[pos]}
+                            </span>
+                          ) : null)}
+                          <span style={{ fontSize:'0.65rem', color:'rgba(255,255,255,0.45)', alignSelf:'center' }}>{t.players.length} jogadores</span>
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              {/* actions */}
+              <div style={{ display:'flex', gap:10, justifyContent:'flex-end' }}>
+                <button onClick={() => setImportModal(null)}
+                  style={{ background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', color:'rgba(255,255,255,0.7)', borderRadius:'8px', padding:'10px 22px', cursor:'pointer', fontWeight:700, fontSize:'0.88rem' }}>
+                  Cancelar
+                </button>
+                <button onClick={confirmImport} disabled={importModal.selected.size === 0}
+                  style={{ background: importModal.selected.size === 0 ? 'rgba(255,255,255,0.08)' : 'rgba(34,197,94,0.28)', border:`1px solid ${importModal.selected.size === 0 ? 'rgba(255,255,255,0.10)' : 'rgba(34,197,94,0.50)'}`, color: importModal.selected.size === 0 ? 'rgba(255,255,255,0.35)' : '#86efac', borderRadius:'8px', padding:'10px 22px', cursor: importModal.selected.size === 0 ? 'not-allowed' : 'pointer', fontWeight:700, fontSize:'0.88rem', transition:'all 0.15s' }}>
+                  ✓ Importar {importModal.selected.size > 0 ? `(${importModal.selected.size} time${importModal.selected.size > 1 ? 's' : ''})` : ''}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Single unified modal */}
       {showModal && (
         <PlayerRosterModal
@@ -856,6 +1223,14 @@ export default function FootballTeamBuilder() {
           drawnPlayers={drawnPlayers}
           completedTeams={completedTeams}
           onClose={() => setShowModal(false)}
+          onExportCsv={exportRosterCsv}
+          onImportFile={handleImportFile}
+          onParsePaste={handleParsePaste}
+          disabledTeams={disabledTeams}
+          toggleTeam={toggleTeam}
+          activeTeamCount={activeTeamCount}
+          allTeamNames={allTeamNames}
+          posHex={posHex}
         />
       )}
 
@@ -896,6 +1271,18 @@ export default function FootballTeamBuilder() {
           </div>
           <div className="mt-6 pt-4 border-t border-white/20">
             <h3 className="text-lg font-bold text-white mb-3 text-center">⚙️ Configurações do Deck</h3>
+            {/* Color theme selector */}
+            <div className="flex items-center gap-3 bg-white/10 p-3 rounded-lg mb-3 max-w-2xl mx-auto">
+              <span className="text-white font-bold whitespace-nowrap">🎨 Intensidade de cores</span>
+              <div className="flex gap-2 ml-auto">
+                {Object.entries(COLOR_THEMES).map(([key, t]) => (
+                  <button key={key} onClick={() => setColorTheme(key)}
+                    className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all border ${colorTheme === key ? 'bg-yellow-400 text-green-900 border-yellow-400 scale-105' : 'bg-white/10 text-white border-white/20 hover:bg-white/20'}`}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="flex flex-col gap-3 max-w-2xl mx-auto">
               <label className="flex items-center gap-3 bg-white/10 p-3 rounded-lg cursor-pointer hover:bg-white/20 transition-colors">
                 <input type="checkbox" checked={hideUnavailablePositions} onChange={e => setHideUnavailablePositions(e.target.checked)} className="w-5 h-5 cursor-pointer" />
@@ -920,7 +1307,7 @@ export default function FootballTeamBuilder() {
           <h2 className="text-xl font-bold text-white mb-4 text-center">📊 Status por Posição ({formation})</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {getPositionStatus().map(s => (
-              <div key={s.position} className={`bg-gradient-to-br ${POSITION_COLORS[s.position]} rounded-lg p-3 text-white text-center ${!s.isAvailable ? 'opacity-40' : ''}`}>
+              <div key={s.position} className={`bg-gradient-to-br ${posTw[s.position]} rounded-lg p-3 text-white text-center ${!s.isAvailable ? 'opacity-40' : ''}`}>
                 <div className="font-bold text-sm mb-1">{s.label}{!s.isAvailable && ' ❌'}</div>
                 <div className="text-2xl font-bold">
                   <span className={s.main === s.maxMain ? 'text-green-300' : ''}>{s.main}</span>/{s.maxMain}
@@ -978,7 +1365,7 @@ export default function FootballTeamBuilder() {
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {drawnPlayers.map(player => (
-                <div key={player.id} className={`bg-gradient-to-br ${POSITION_COLORS[player.position]} rounded-lg p-4 shadow-xl border-2 border-white`}>
+                <div key={player.id} className={`bg-gradient-to-br ${posTw[player.position]} rounded-lg p-4 shadow-xl border-2 border-white`}>
                   <div className="flex justify-between items-start mb-2">
                     <h3 className="text-xl font-bold text-white">{player.name}</h3>
                     <span className="bg-white text-gray-900 px-3 py-1 rounded-full font-bold text-sm">#{player.number}</span>
@@ -1004,7 +1391,7 @@ export default function FootballTeamBuilder() {
                 const canBeMain = canAddToMain(player);
                 const canBeReserve = canAddToReserves(player);
                 return (
-                  <div key={player.id} className={`bg-gradient-to-br ${POSITION_COLORS[player.position]} rounded-lg p-4 shadow-xl border-2 border-blue-300`}>
+                  <div key={player.id} className={`bg-gradient-to-br ${posTw[player.position]} rounded-lg p-4 shadow-xl border-2 border-blue-300`}>
                     <div className="flex justify-between items-start mb-2">
                       <h3 className="text-xl font-bold text-white">{player.name}</h3>
                       <span className="bg-white text-gray-900 px-3 py-1 rounded-full font-bold text-sm">#{player.number}</span>
@@ -1046,7 +1433,7 @@ export default function FootballTeamBuilder() {
                   <h3 className="text-white font-bold mb-2 text-lg">{POSITION_LABELS[pos]}</h3>
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                     {inPos.map(player => (
-                      <div key={player.id} className={`bg-gradient-to-br ${POSITION_COLORS[player.position]} rounded-lg p-3 shadow-lg border border-white/50`}>
+                      <div key={player.id} className={`bg-gradient-to-br ${posTw[player.position]} rounded-lg p-3 shadow-lg border border-white/50`}>
                         <div className="flex justify-between items-start mb-1">
                           <h3 className="text-sm font-bold text-white">{player.name}</h3>
                           <span className="bg-white text-gray-900 px-2 py-0.5 rounded text-xs font-bold">#{player.number}</span>
@@ -1071,7 +1458,7 @@ export default function FootballTeamBuilder() {
             <h2 className="text-2xl font-bold text-white mb-4">🪑 Banco de Reservas ({reserves.length}/{maxReservesTotal})</h2>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
               {reserves.map(player => (
-                <div key={player.id} className={`bg-gradient-to-br ${POSITION_COLORS[player.position]} rounded-lg p-3 shadow-lg border border-white/50 opacity-80`}>
+                <div key={player.id} className={`bg-gradient-to-br ${posTw[player.position]} rounded-lg p-3 shadow-lg border border-white/50 opacity-80`}>
                   <div className="flex justify-between items-start mb-1">
                     <h3 className="text-sm font-bold text-white">{player.name}</h3>
                     <span className="bg-white text-gray-900 px-2 py-0.5 rounded text-xs font-bold">#{player.number}</span>
@@ -1109,6 +1496,21 @@ export default function FootballTeamBuilder() {
           </div>
         )}
 
+        {/* ── Exportar Times .txt ──────────────────────────────────────────── */}
+        {completedTeams.length > 0 && (
+          <div className="text-center mt-6">
+            <button
+              onClick={exportTeamsTxt}
+              className="inline-flex items-center gap-2 bg-green-700 hover:bg-green-800 text-white font-bold py-3 px-8 rounded-lg transition-colors border border-white/20 shadow-lg"
+            >
+              <Download size={16} />
+              Exportar Times Criados (.txt)
+              <span className="bg-white/20 text-xs px-2 py-0.5 rounded-full">{completedTeams.length}</span>
+            </button>
+            <p className="text-white/40 text-xs mt-2">Salva todos os times criados em um arquivo de texto</p>
+          </div>
+        )}
+
         {/* Times Criados */}
         {showCompletedTeams && completedTeams.length > 0 && (
           <div className="bg-white/10 backdrop-blur-md rounded-xl p-6 mb-8 mt-8">
@@ -1136,7 +1538,7 @@ export default function FootballTeamBuilder() {
                           <h5 className="text-white/80 font-semibold text-sm mb-1">{POSITION_LABELS[pos]}:</h5>
                           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                             {inPos.map(p => (
-                              <div key={p.id} className={`bg-gradient-to-br ${POSITION_COLORS[p.position]} rounded p-2 text-xs`}>
+                              <div key={p.id} className={`bg-gradient-to-br ${posTw[p.position]} rounded p-2 text-xs`}>
                                 <span className="text-white font-bold">{p.name}</span>
                                 <span className="text-white/80 ml-1">#{p.number}</span>
                               </div>
@@ -1151,7 +1553,7 @@ export default function FootballTeamBuilder() {
                       <h4 className="text-lg font-bold text-white mb-2">🪑 Reservas ({team.reserves.length})</h4>
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
                         {team.reserves.map(p => (
-                          <div key={p.id} className={`bg-gradient-to-br ${POSITION_COLORS[p.position]} rounded p-2 text-xs opacity-80`}>
+                          <div key={p.id} className={`bg-gradient-to-br ${posTw[p.position]} rounded p-2 text-xs opacity-80`}>
                             <span className="text-white font-bold">{p.name}</span>
                             <span className="text-white/80 ml-1">#{p.number}</span>
                           </div>
